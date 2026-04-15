@@ -113,13 +113,25 @@ def parse_duration(duration_str: str) -> int:
     """
     if not duration_str:
         return 3600  # 默认 1 小时
+    duration_str = duration_str.strip()
+    if not duration_str:
+        return 3600
     unit = duration_str[-1].lower()
+    multipliers = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400}
+    if unit not in multipliers:
+        print(f"错误: 无法解析时间范围 '{duration_str}'，不支持的单位 '{unit}'", file=sys.stderr)
+        print("支持的格式: 30s, 5m, 1h, 24h, 7d", file=sys.stderr)
+        sys.exit(1)
     try:
         value = int(duration_str[:-1])
     except ValueError:
-        return 3600
-    multipliers = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400}
-    return value * multipliers.get(unit, 3600)
+        print(f"错误: 无法解析时间范围 '{duration_str}'，数值部分无效", file=sys.stderr)
+        print("支持的格式: 30s, 5m, 1h, 24h, 7d", file=sys.stderr)
+        sys.exit(1)
+    if value <= 0:
+        print(f"错误: 时间范围的数值必须为正整数，当前值: {value}", file=sys.stderr)
+        sys.exit(1)
+    return value * multipliers[unit]
 
 
 def parse_time_string(time_str: str) -> float:
@@ -146,8 +158,10 @@ def parse_time_string(time_str: str) -> float:
     except ValueError:
         pass
     
-    # 去掉末尾的 Z（UTC 标记），统一按本地时间处理
-    time_str = time_str.rstrip('Z').rstrip('z')
+    # 检测是否带有 UTC 时区标记 Z/z
+    is_utc = time_str.endswith('Z') or time_str.endswith('z')
+    if is_utc:
+        time_str = time_str[:-1]  # 去掉末尾的 Z
     # 将 T 分隔符替换为空格
     time_str = time_str.replace('T', ' ')
     
@@ -164,6 +178,11 @@ def parse_time_string(time_str: str) -> float:
     for fmt in formats:
         try:
             dt = datetime.strptime(time_str, fmt)
+            if is_utc:
+                # UTC 时间：手动计算 UTC 时间戳（不依赖 timezone 模块）
+                # calendar.timegm 等价于将 struct_time 按 UTC 转换为时间戳
+                import calendar
+                return float(calendar.timegm(dt.timetuple()))
             return dt.timestamp()
         except ValueError:
             continue
@@ -316,17 +335,20 @@ def http_post(url: str, data: dict, timeout: int = 30, _retry_auth: bool = True)
     except urllib.error.URLError as e:
         print(f"连接错误: {e.reason}", file=sys.stderr)
         sys.exit(1)
+    except json.JSONDecodeError:
+        print("响应解析错误: 非 JSON 格式", file=sys.stderr)
+        sys.exit(1)
 
 
-def query_instant(base_url: str, query: str, time_val: float = None) -> dict:
+def query_instant(base_url: str, query: str, time_val: float = None, timeout: int = 30) -> dict:
     """即时查询 - 获取某个时间点的指标值"""
     params = {'query': query}
-    if time_val:
+    if time_val is not None:
         params['time'] = str(time_val)
-    return http_post(f"{base_url}/api/v1/query", params)
+    return http_post(f"{base_url}/api/v1/query", params, timeout=timeout)
 
 
-def query_range(base_url: str, query: str, start: float, end: float, step: str) -> dict:
+def query_range(base_url: str, query: str, start: float, end: float, step: str, timeout: int = 30) -> dict:
     """范围查询 - 获取时间段内的指标变化趋势"""
     params = {
         'query': query,
@@ -334,51 +356,51 @@ def query_range(base_url: str, query: str, start: float, end: float, step: str) 
         'end': str(end),
         'step': step,
     }
-    return http_post(f"{base_url}/api/v1/query_range", params)
+    return http_post(f"{base_url}/api/v1/query_range", params, timeout=timeout)
 
 
-def query_series(base_url: str, match: str, start: float = None, end: float = None) -> dict:
+def query_series(base_url: str, match: str, start: float = None, end: float = None, timeout: int = 30) -> dict:
     """查找匹配的时间序列"""
     params = {'match[]': match}
-    if start:
+    if start is not None:
         params['start'] = str(start)
-    if end:
+    if end is not None:
         params['end'] = str(end)
     url = f"{base_url}/api/v1/series?{urllib.parse.urlencode(params)}"
-    return http_get(url)
+    return http_get(url, timeout=timeout)
 
 
-def query_targets(base_url: str) -> dict:
+def query_targets(base_url: str, timeout: int = 30) -> dict:
     """查询抓取目标状态"""
-    return http_get(f"{base_url}/api/v1/targets")
+    return http_get(f"{base_url}/api/v1/targets", timeout=timeout)
 
 
-def query_alerts(base_url: str) -> dict:
+def query_alerts(base_url: str, timeout: int = 30) -> dict:
     """查询活跃告警"""
-    return http_get(f"{base_url}/api/v1/alerts")
+    return http_get(f"{base_url}/api/v1/alerts", timeout=timeout)
 
 
-def query_rules(base_url: str) -> dict:
+def query_rules(base_url: str, timeout: int = 30) -> dict:
     """查询告警和 Recording Rules"""
-    return http_get(f"{base_url}/api/v1/rules")
+    return http_get(f"{base_url}/api/v1/rules", timeout=timeout)
 
 
-def query_labels(base_url: str) -> dict:
+def query_labels(base_url: str, timeout: int = 30) -> dict:
     """获取所有标签名"""
-    return http_get(f"{base_url}/api/v1/labels")
+    return http_get(f"{base_url}/api/v1/labels", timeout=timeout)
 
 
-def query_label_values(base_url: str, label: str) -> dict:
+def query_label_values(base_url: str, label: str, timeout: int = 30) -> dict:
     """获取某标签的所有值"""
-    return http_get(f"{base_url}/api/v1/label/{label}/values")
+    return http_get(f"{base_url}/api/v1/label/{label}/values", timeout=timeout)
 
 
-def query_metadata(base_url: str, metric: str = None) -> dict:
+def query_metadata(base_url: str, metric: str = None, timeout: int = 30) -> dict:
     """查看指标元数据"""
     url = f"{base_url}/api/v1/metadata"
     if metric:
         url += f"?metric={urllib.parse.quote(metric)}"
-    return http_get(url)
+    return http_get(url, timeout=timeout)
 
 
 # ============================================================
@@ -473,6 +495,7 @@ var option = {{
       var time = params[0].axisValueLabel;
       var lines = '<div style="font-weight:bold;margin-bottom:4px">' + time + '</div>';
       params.forEach(function(p) {{
+        if (p.value === null || p.value === undefined) return;
         var val = typeof p.value === 'number' ? p.value.toFixed(4) : p.value;
         lines += '<div>' + p.marker + ' ' + p.seriesName + ': <b>' + val + '</b></div>';
       }});
@@ -568,13 +591,24 @@ def generate_chart_html(query: str, time_desc: str, step: str, result: list, out
         else:
             duration_sec = 3600
     
-    # 提取时间戳（使用第一条序列的时间戳作为 X 轴）
+    # 收集所有序列的时间戳并合并为统一的有序时间轴
+    # 这解决了不同序列（如国内/海外任务）时间戳不一致导致的横轴错位问题
+    all_ts_set = set()
+    for item in result:
+        for ts, _ in item.get('values', []):
+            all_ts_set.add(float(ts))
+    unified_ts_list = sorted(all_ts_set)
+    
+    # 构建统一时间轴的显示标签
     timestamps = []
-    for ts, _ in result[0].get('values', []):
+    for ts in unified_ts_list:
         dt = datetime.fromtimestamp(ts)
         timestamps.append(dt.strftime('%H:%M:%S') if duration_sec <= 86400 else dt.strftime('%m-%d %H:%M'))
     
-    # 构建每条序列的数据
+    # 构建时间戳到索引的映射表，用于将每条序列的数据对齐到统一时间轴
+    ts_to_idx = {ts: i for i, ts in enumerate(unified_ts_list)}
+    
+    # 构建每条序列的数据，按统一时间轴对齐
     series_data = []
     for item in result:
         metric = item.get('metric', {})
@@ -586,12 +620,15 @@ def generate_chart_html(query: str, time_desc: str, step: str, result: list, out
             label_parts.append(f'{k}={v}')
         name = ', '.join(label_parts) if label_parts else metric.get('__name__', 'value')
         
-        values = []
-        for _, v in item.get('values', []):
-            try:
-                values.append(round(float(v), 6))
-            except (ValueError, TypeError):
-                values.append(None)
+        # 先初始化为全 None 的数组（与统一时间轴等长）
+        values = [None] * len(unified_ts_list)
+        for ts, v in item.get('values', []):
+            idx = ts_to_idx.get(float(ts))
+            if idx is not None:
+                try:
+                    values[idx] = round(float(v), 6)
+                except (ValueError, TypeError):
+                    pass  # 保持 None
         
         series_data.append({
             'name': name,
@@ -638,9 +675,20 @@ def format_instant_table(result: list) -> str:
     for item in result:
         metric = item.get('metric', {})
         labels = ', '.join(f'{k}={v}' for k, v in sorted(metric.items()))
-        ts, val = item['value']
-        dt = datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')
-        lines.append(f"  {labels:60s} | {dt} | {val}")
+        value_pair = item.get('value')
+        if value_pair and len(value_pair) == 2:
+            ts, val = value_pair
+            dt = datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')
+            lines.append(f"  {labels:60s} | {dt} | {val}")
+        else:
+            # 可能是 matrix 类型或数据缺失
+            values = item.get('values', [])
+            if values:
+                ts, val = values[-1]
+                dt = datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')
+                lines.append(f"  {labels:60s} | {dt} | {val} (最新值)")
+            else:
+                lines.append(f"  {labels:60s} | (无数据)")
     return '\n'.join(lines)
 
 
@@ -689,7 +737,11 @@ def cmd_instant(args):
     if not args.query:
         print("错误: instant 模式需要 --query 参数", file=sys.stderr)
         sys.exit(1)
-    data = query_instant(args.url, args.query)
+    if args.format == 'chart':
+        print("提示: instant（即时查询）模式不支持 chart 输出，请使用 --mode range 进行范围查询后再生成图表", file=sys.stderr)
+        print("      自动切换为 table 格式输出", file=sys.stderr)
+        args.format = 'table'
+    data = query_instant(args.url, args.query, timeout=args.timeout)
     if data.get('status') != 'success':
         print(f"查询失败: {data.get('error', '未知错误')}", file=sys.stderr)
         sys.exit(1)
@@ -710,12 +762,18 @@ def cmd_range(args):
         sys.exit(1)
     start, end, duration_sec, time_desc = resolve_time_range(args)
     step = args.step if args.step != 'auto' else auto_step(duration_sec)
-    data = query_range(args.url, args.query, start, end, step)
+    data = query_range(args.url, args.query, start, end, step, timeout=args.timeout)
     if data.get('status') != 'success':
         print(f"查询失败: {data.get('error', '未知错误')}", file=sys.stderr)
         sys.exit(1)
     result = data.get('data', {}).get('result', [])
     if args.format == 'chart':
+        if not result:
+            print(f"查询无数据，无法生成图表。", file=sys.stderr)
+            print(f"   查询: {args.query}", file=sys.stderr)
+            print(f"   范围: {time_desc}，步长 {step}", file=sys.stderr)
+            print(f"   请检查查询表达式或时间范围是否正确", file=sys.stderr)
+            sys.exit(1)
         # 图表模式：生成自包含 HTML 文件
         output_path = getattr(args, 'output', None)
         chart_path = generate_chart_html(args.query, time_desc, step, result, output_path, duration_sec)
@@ -734,7 +792,7 @@ def cmd_range(args):
 
 def cmd_targets(args):
     """查看抓取目标状态"""
-    data = query_targets(args.url)
+    data = query_targets(args.url, timeout=args.timeout)
     if args.format == 'json':
         print(json.dumps(data, indent=2, ensure_ascii=False))
     else:
@@ -767,7 +825,7 @@ def cmd_targets(args):
 
 def cmd_alerts(args):
     """查看活跃告警"""
-    data = query_alerts(args.url)
+    data = query_alerts(args.url, timeout=args.timeout)
     if args.format == 'json':
         print(json.dumps(data, indent=2, ensure_ascii=False))
     else:
@@ -802,7 +860,7 @@ def cmd_alerts(args):
 def cmd_labels(args):
     """查看标签信息"""
     if args.label:
-        data = query_label_values(args.url, args.label)
+        data = query_label_values(args.url, args.label, timeout=args.timeout)
         if args.format == 'json':
             print(json.dumps(data, indent=2, ensure_ascii=False))
         else:
@@ -811,7 +869,7 @@ def cmd_labels(args):
             for v in sorted(values):
                 print(f"  - {v}")
     else:
-        data = query_labels(args.url)
+        data = query_labels(args.url, timeout=args.timeout)
         if args.format == 'json':
             print(json.dumps(data, indent=2, ensure_ascii=False))
         else:
@@ -823,7 +881,7 @@ def cmd_labels(args):
 
 def cmd_rules(args):
     """查看规则"""
-    data = query_rules(args.url)
+    data = query_rules(args.url, timeout=args.timeout)
     if args.format == 'json':
         print(json.dumps(data, indent=2, ensure_ascii=False))
     else:
@@ -847,7 +905,7 @@ def cmd_rules(args):
 
 def cmd_metadata(args):
     """查看指标元数据"""
-    data = query_metadata(args.url, args.metric)
+    data = query_metadata(args.url, args.metric, timeout=args.timeout)
     if args.format == 'json':
         print(json.dumps(data, indent=2, ensure_ascii=False))
     else:
@@ -875,7 +933,7 @@ def cmd_series(args):
         print("错误: series 模式需要 --query 参数（作为 match 表达式）", file=sys.stderr)
         sys.exit(1)
     start, end, duration_sec, time_desc = resolve_time_range(args)
-    data = query_series(args.url, args.query, start, end)
+    data = query_series(args.url, args.query, start, end, timeout=args.timeout)
     if args.format == 'json':
         print(json.dumps(data, indent=2, ensure_ascii=False))
     else:

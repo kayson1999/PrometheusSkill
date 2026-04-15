@@ -395,8 +395,37 @@ def append_alert_rule_to_file(rules_file, group_name, rule):
     # 简单查找 "name: <group_name>" 行
     group_marker = f"name: {group_name}"
     if group_marker in content or f'name: "{group_name}"' in content:
-        # 在文件末尾追加规则（在最后一行之前）
-        content = content.rstrip('\n') + '\n' + new_rule_text + '\n'
+        # 在该 group 的 rules 区域内追加新规则
+        # 找到 group 的 "rules:" 行，然后找到该 group 最后一条规则的末尾位置
+        lines = content.split('\n')
+        group_found = False
+        rules_start = -1
+        insert_pos = -1
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if not group_found:
+                if group_marker in stripped or f'name: "{group_name}"' in stripped:
+                    group_found = True
+                continue
+            # 找到 group 后，寻找 "rules:" 行
+            if rules_start == -1:
+                if stripped == 'rules:':
+                    rules_start = i
+                continue
+            # 在 rules 区域内，跟踪最后一个有效的规则行
+            # 遇到同级或上级缩进的非空行时，说明当前 group 的 rules 结束
+            if stripped and not line.startswith('      ') and not line.startswith('        '):
+                # 如果遇到下一个 group（以 "- name:" 开头）或其他顶级 key，停止
+                insert_pos = i
+                break
+            insert_pos = i + 1
+        
+        if insert_pos == -1:
+            # 如果没有找到结束位置，追加到文件末尾
+            insert_pos = len(lines)
+        
+        lines.insert(insert_pos, new_rule_text)
+        content = '\n'.join(lines)
     else:
         # 创建新 group
         new_group = f"\n  - name: {group_name}\n    rules:\n{new_rule_text}\n"
@@ -1148,6 +1177,10 @@ def cmd_generate_scrape_config(args):
         sys.exit(1)
 
     template = SCRAPE_TEMPLATES[template_name]
+
+    # 深拷贝模板数据，避免修改全局 SCRAPE_TEMPLATES
+    import copy
+    template = copy.deepcopy(template)
 
     # 如果是 blackbox 模板且指定了 probe-targets，替换默认目标
     if template_name == 'blackbox' and args.probe_targets:
